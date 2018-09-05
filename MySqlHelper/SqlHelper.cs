@@ -9,6 +9,7 @@ using Cnxy.Array;
 
 namespace Cnxy.Data
 {
+    //No.1 Helper
     public class SqlHelper<T>:IDisposable where T: DbProviderFactory
     {
         T providerFactory;
@@ -25,7 +26,7 @@ namespace Cnxy.Data
             this.ConnectionString = connectionString;
         }
 
-        public bool UseTransaction { set; get; } = true;
+        public bool UseTransaction { set; get; } = false;
 
         ~SqlHelper()
         {
@@ -168,6 +169,136 @@ namespace Cnxy.Data
             GC.SuppressFinalize(this);
         }
     }
+
+    //No.2 Helper
+    public static class SqlHelperExtension
+    {
+        static string connectionString { set; get; }
+        static bool useTransaction { set; get; } = false;
+
+        public static void UseTransaction(this DbConnection connection,bool useTransaction)
+        {
+            SqlHelperExtension.useTransaction = useTransaction;
+        }
+
+        public static Tout ExecuteScalar<Tout>(this DbConnection connection, string commandText, params object[] values) => ExecuteScalar<Tout>(connection,new string[] { commandText }, values.ConvertTo())[0];
+
+        public static Tout ExecuteScalarWithProc<Tout>(this DbConnection connection, string commandText, params object[] values) => ExecuteScalarWithProc<Tout>(connection,new string[] { commandText }, values.ConvertTo())[0];
+
+        public static Tout[] ExecuteScalar<Tout>(this DbConnection connection, string[] commandText, params object[][] values) => Execute<Tout>(connection,x => x.ExecuteScalar(), commandText, CommandType.Text, values);
+
+        public static Tout[] ExecuteScalarWithProc<Tout>(this DbConnection connection, string[] commandText, params object[][] values) => Execute<Tout>(connection,x => x.ExecuteScalar(), commandText, CommandType.StoredProcedure, values);
+
+        public static int ExecuteNonQuery(this DbConnection connection, string commandText, params object[] values) => ExecuteNonQuery(connection,new string[] { commandText }, values.ConvertTo())[0];
+
+        public static int ExecuteNonQueryWithProc(this DbConnection connection, string commandText, params object[] values) => ExecuteNonQueryWithProc(connection,new string[] { commandText }, values.ConvertTo())[0];
+
+        public static int[] ExecuteNonQuery(this DbConnection connection, string[] commandText, params object[][] values) => Execute<int>(connection,x => x.ExecuteNonQuery(), commandText, CommandType.Text, values);
+
+        public static int[] ExecuteNonQueryWithProc(this DbConnection connection, string[] commandText, params object[][] values) => Execute<int>(connection,x => x.ExecuteNonQuery(), commandText, CommandType.StoredProcedure, values);
+
+        private static Tout[] Execute<Tout>(this DbConnection connection,Func<DbCommand, object> commandMethodToExecute, string[] commandText, CommandType commandType, object[][] values)
+        {
+            if (values.GetLength(0) != 0 && commandText.Length != values.GetLength(0)) throw new ArgumentException($"{nameof(commandText)}数组长度必须与{nameof(values)}第一维长度相同");
+
+            using (DbCommand command = connection.CreateCommand())
+            {
+                command.Connection = connection;
+                command.CommandType = commandType;
+                if (connection.State == ConnectionState.Closed) connection.Open();
+                if (useTransaction)
+                {
+                    using (DbTransaction transaction = connection.BeginTransaction())
+                    {
+                        command.Transaction = transaction;
+                        try
+                        {
+                            IList<object> resultObj = GetExecuteResult(commandMethodToExecute, command, commandText, values);
+                            transaction.Commit();
+                            connection.Close();
+                            return resultObj.ConvertTo<object, Tout>();
+                        }
+                        catch (DbException)
+                        {
+                            transaction.Rollback();
+                            throw;
+                        }
+                    }
+                }
+                else
+                {
+                    IList<object> resultObj = GetExecuteResult(commandMethodToExecute, command, commandText, values);
+                    connection.Close();
+                    return resultObj.ConvertTo<object, Tout>();
+                }
+            }
+
+        }
+
+        private static IList<object> GetExecuteResult(Func<DbCommand, object> commandMethodToExecute, DbCommand command, string[] commandText, object[][] values)
+        {
+            List<object> resultObj = new List<object>();
+            for (int i = 0; i < commandText.Length; i++)
+            {
+                if (values.GetLength(0) == 0 || values[i].Length == 0) command.CommandText = commandText[i];
+                else command.CommandText = GetCommandText(commandText[i], values[i]);
+                resultObj.Add(commandMethodToExecute(command));
+            }
+            return resultObj;
+        }
+
+        public static DataTable ExecuteDataTable(this DbConnection connection, string commandText, params object[] values) => ExecuteDataTable(connection, new string[] { commandText }, values.ConvertTo())[0];
+
+        public static DataTable ExecuteDataTableWithProc(this DbConnection connection, string commandText, params object[] values) => ExecuteDataTableWithProc(connection, new string[] { commandText }, values.ConvertTo())[0];
+
+        public static DataTable[] ExecuteDataTable(this DbConnection connection, string[] commandText, params object[][] values) => ExecuteDataTable(connection, commandText, CommandType.Text, values);
+
+        public static DataTable[] ExecuteDataTableWithProc(this DbConnection connection,string[] commandText, params object[][] values) => ExecuteDataTable(connection,commandText, CommandType.StoredProcedure, values);
+
+        private static DataTable[] ExecuteDataTable(this DbConnection connection,string[] commandText, CommandType commandType, object[][] values)
+        {
+            if (values.GetLength(0) != 0 && commandText.Length != values.GetLength(0)) throw new ArgumentException($"{nameof(commandText)}数组长度必须与{nameof(values)}第一维长度相同");
+            commandText.ToList().ForEach(x =>
+            {
+                if (x.MatchWithSemicolon().Length > 0) throw new ArgumentException($"命令不能含有分号，只能针对单条SQL语句");
+            });
+
+            using (DbCommand command = connection.CreateCommand())
+            {
+                command.Connection = connection;
+                command.CommandType = commandType;
+                if (connection.State == ConnectionState.Closed) connection.Open();
+                DataSet dataSet = new DataSet();
+                DataTable[] dataTables = new DataTable[commandText.Length];
+                for (int i = 0; i < commandText.Length; i++)
+                {
+                    if (values.GetLength(0) == 0 || values[i].Length == 0) command.CommandText = commandText[i];
+                    else command.CommandText = GetCommandText(commandText[i], values[i]);
+                    using (DbDataReader reader = command.ExecuteReader())
+                    {
+                        dataTables[i] = new DataTable(command.CommandText.MatchWithTable()[0]);
+                        dataSet.Tables.Add(dataTables[i]);
+                        dataSet.Load(reader, LoadOption.OverwriteChanges, dataTables[i]);
+                    }
+                }
+                connection.Close();
+                return dataTables;
+            }
+
+        }
+
+        private static string GetCommandText(string commandText, params object[] values)
+        {
+            string[] pResults = commandText.MatchWithParamP();
+            if (pResults.Length != values.Length) throw new ArgumentException($"当{nameof(values)}有参数时，{nameof(commandText)}必须有@p参数与之对应");
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (values[i] is bool) values[i] = (bool)values[i] ? 1 : 0;
+                commandText = commandText.Replace($"@p{i + 1}", $"'{values[i]}'");
+            }
+            return commandText;
+        }
+    }
 }
 
 namespace Cnxy.Sql
@@ -183,6 +314,13 @@ namespace Cnxy.Sql
         }
 
         public static string[] MatchWithSemicolon(this string @this) => Text.Extension.Match(@this, "[@A-Za-z0-9]*;");
+
+        public static string[] MatchWithTable(this string @this)
+        {
+            string[] result = Text.Extension.Match(@this, @"[F|f]{1}[R|r]{1}[O|o]{1}[M|m]{1}\s[a-zA-Z0-9]+");
+            return result.Select(x => x.Remove(0, x.IndexOf(" ") + 1)).ToArray();
+            
+        }
     }
 }
 
