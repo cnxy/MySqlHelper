@@ -45,6 +45,8 @@ namespace TestConsoleApp
                 //显示数据
                 DataTable table = helper.ExecuteDataTable("SELECT * FROM Info");
                 table.Rows.Cast<DataRow>().ToList().ForEach(x => Console.WriteLine($"{string.Format("{0:000}", x[0])},{x[1]}"));
+                //SqlSever需要释放连接池
+                SqlConnection.ClearAllPools();
             }
             Console.Write("Press any key to continue...");
             Console.ReadKey();
