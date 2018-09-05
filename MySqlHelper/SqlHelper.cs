@@ -13,20 +13,26 @@ namespace Cnxy.Data
     {
         T providerFactory;
 
-        public SqlHelper(string connectionString)
+        public SqlHelper()
         {
             var instance = typeof(T).GetField("Instance");
             if (instance == null) throw new ArgumentException($"不支持此类({nameof(T)})的操作");
             providerFactory = (T)instance.GetValue(default(T));
+        }
+
+        public SqlHelper(string connectionString):this()
+        {
             this.ConnectionString = connectionString;
         }
+
+        public bool UseTransaction { set; get; } = true;
 
         ~SqlHelper()
         {
             Dispose(false);
         }
 
-        public string ConnectionString { get; }
+        public string ConnectionString { set; get; }
 
         public Tout ExecuteScalar<Tout>(string commandText,  params object[] values) => ExecuteScalar<Tout>(new string[] { commandText }, values.ConvertTo())[0];
         
@@ -55,30 +61,43 @@ namespace Cnxy.Data
                     command.Connection = connection;
                     command.CommandType = commandType;
                     connection.Open();
-                    using (DbTransaction transaction = connection.BeginTransaction())
+                    if(UseTransaction)
                     {
-                        command.Transaction = transaction;
-                        try
+                        using (DbTransaction transaction = connection.BeginTransaction())
                         {
-                            List<object> resultObj = new List<object>();
-                            for (int i = 0; i < commandText.Length; i++)
+                            command.Transaction = transaction;
+                            try
                             {
-                                if (values.GetLength(0) == 0 || values[i].Length == 0) command.CommandText = commandText[i];
-                                else command.CommandText = GetCommandText(commandText[i], values[i]);
-                                resultObj.Add(commandMethodToExecute(command));
+                                IList<object> resultObj = GetExecuteResult(commandMethodToExecute, command, commandText, values);
+                                transaction.Commit();
+                                return resultObj.ConvertTo<object,Tout>();
                             }
-                            transaction.Commit();
-                            Tout[] resultReal = resultObj.Select(x => x == null ? default(Tout) : (Tout)Convert.ChangeType(x, typeof(Tout))).ToArray();
-                            return resultReal;
+                            catch (DbException)
+                            {
+                                transaction.Rollback();
+                                throw;
+                            }
                         }
-                        catch (DbException)
-                        {
-                            transaction.Rollback();
-                            throw;
-                        }
+                    }
+                    else
+                    {
+                        IList<object> resultObj = GetExecuteResult(commandMethodToExecute, command, commandText, values);
+                        return resultObj.ConvertTo<object, Tout>();
                     }
                 }
             }
+        }
+
+        private IList<object> GetExecuteResult(Func<DbCommand, object> commandMethodToExecute,DbCommand command, string[] commandText, object[][] values)
+        {
+            List<object> resultObj = new List<object>();
+            for (int i = 0; i < commandText.Length; i++)
+            {
+                if (values.GetLength(0) == 0 || values[i].Length == 0) command.CommandText = commandText[i];
+                else command.CommandText = GetCommandText(commandText[i], values[i]);
+                resultObj.Add(commandMethodToExecute(command));
+            }
+            return resultObj;
         }
 
         public DataTable ExecuteDataTable(string commandText, params object[] values) => ExecuteDataTable(new string[] { commandText }, values.ConvertTo())[0];
@@ -149,8 +168,6 @@ namespace Cnxy.Data
             GC.SuppressFinalize(this);
         }
     }
-
-
 }
 
 namespace Cnxy.Sql
@@ -193,9 +210,16 @@ namespace Cnxy.Array
     {
         public static T[][] ConvertTo<T>(this T[] values)
         {
-            List<T[]> list = new List<T[]>();
-            list.Add(values);
+            List<T[]> list = new List<T[]>
+            {
+                values
+            };
             return list.ToArray();
+        }
+
+        public static Tout[] ConvertTo<Tin,Tout>(this IList<Tin> list)
+        {
+            return list.Select(x => x == null ? default(Tout) : (Tout)Convert.ChangeType(x, typeof(Tout))).ToArray();
         }
     }
 }
