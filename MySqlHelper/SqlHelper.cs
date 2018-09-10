@@ -53,6 +53,8 @@ namespace Cnxy.Data
 
         public int[] ExecuteNonQuery(string[] commandText, params object[][] values) => Execute<int>(x => x.ExecuteNonQuery(), commandText, values);
 
+        public Tout ExecuteWithProc<Tout>(string commandText, params object[] values) =>(Tout)Convert.ChangeType(ExecuteWithProc(commandText, values)[0],typeof(Tout));
+
         public object[] ExecuteWithProc(string commandText, params object[] values) => ExecuteWithProc(new string[] { commandText }, values.ConvertTo())[0];
 
         public object[][] ExecuteWithProc(string commandText, params object[][] values) => ExecuteWithProc(ArrayHelper.CopyTo(values.GetLength(0), commandText).ToArray(), values);
